@@ -31,7 +31,25 @@ module Generamba
       file_path = file_path.join(file_name) if file_name
 
       module_group = self.retrieve_group_or_create_if_needed(group_path, dir_path, file_group_path, project, true, root_path)
-      xcode_file = module_group.new_file(File.absolute_path(file_path))
+
+      # Handle PBXFileSystemSynchronizedRootGroup (folder-based projects)
+      if module_group.class.to_s.include?('PBXFileSystemSynchronizedRootGroup')
+        # For folder-based projects, we add files directly to the target without groups
+        # The file system structure will be automatically reflected in Xcode
+        absolute_file_path = File.absolute_path(file_path)
+        project_dir = File.dirname(project.path)
+
+        begin
+          relative_path = Pathname.new(absolute_file_path).relative_path_from(Pathname.new(project_dir))
+          xcode_file = project.main_group.find_file_by_path(relative_path.to_s) ||
+                       project.main_group.new_reference(absolute_file_path)
+        rescue ArgumentError
+          # If relative path calculation fails, just use absolute path
+          xcode_file = project.main_group.new_reference(absolute_file_path)
+        end
+      else
+        xcode_file = module_group.new_file(File.absolute_path(file_path))
+      end
 
       targets_name.each do |target|
         xcode_target = obtain_target(target, project)
@@ -80,6 +98,13 @@ module Generamba
       module_group = self.retrieve_group_or_create_if_needed(group_path, nil, nil, project, false, group_is_logical)
       return unless module_group
 
+      # Handle PBXFileSystemSynchronizedRootGroup (folder-based projects)
+      if module_group.class.to_s.include?('PBXFileSystemSynchronizedRootGroup')
+        # For folder-based projects, we don't need to clear groups manually
+        # The file system structure is automatically synced
+        return
+      end
+
       files_path = self.files_path_from_group(module_group, project)
       return unless files_path
 
@@ -87,7 +112,10 @@ module Generamba
         self.remove_file_by_file_path(file_path, targets_name, project)
       end
 
-      module_group.clear
+      # Only clear if it's a traditional PBXGroup
+      if module_group.respond_to?(:clear)
+        module_group.clear
+      end
     end
 
     # Finds a group in a xcodeproj file with a given path
@@ -115,13 +143,36 @@ module Generamba
       group_components_count = group_names.count
       group_names += path_names_from_path(file_group_path) if file_group_path
 
-      final_group = project
+      # Check if project uses PBXFileSystemSynchronizedRootGroup (folder-based structure)
+      main_group_class = project.main_group.class.to_s
+      if main_group_class.include?('PBXFileSystemSynchronizedRootGroup')
+        # For folder-based projects, return the main_group directly
+        # We can't create traditional groups in this structure
+        return project.main_group
+      end
+
+      # Handle traditional PBXGroup structure
+      final_group = project.main_group
 
       group_names.each_with_index do |group_name, index|
-        next_group = final_group[group_name]
+        # Double-check if we're dealing with PBXFileSystemSynchronizedRootGroup
+        if final_group.class.to_s.include?('PBXFileSystemSynchronizedRootGroup')
+          return final_group
+        end
+
+        if final_group.respond_to?(:[])
+          next_group = final_group[group_name]
+        else
+          next_group = nil
+        end
 
         unless next_group
           return nil unless create_group_if_not_exists
+
+          # Final safety check before calling new_group
+          unless final_group.respond_to?(:new_group)
+            return final_group
+          end
 
           if group_path != dir_path && index == group_components_count-1
               next_group = group_is_logical ? final_group.new_group(group_name) : final_group.new_group(group_name, dir_path, :project)
@@ -249,10 +300,20 @@ module Generamba
     def self.files_path_from_group(module_group, _project)
       files_path = []
 
-      module_group.recursive_children.each do |file_ref|
-        if file_ref.isa == 'PBXFileReference'
-          file_ref_path = configure_file_ref_path(file_ref)
-          files_path.push(file_ref_path)
+      # Handle PBXFileSystemSynchronizedRootGroup compatibility
+      if module_group.class.to_s.include?('PBXFileSystemSynchronizedRootGroup')
+        # For folder-based projects, we can't traverse recursive_children
+        # Return empty array since folder-based projects handle file cleanup differently
+        return files_path
+      end
+
+      # Handle traditional PBXGroup structure
+      if module_group.respond_to?(:recursive_children)
+        module_group.recursive_children.each do |file_ref|
+          if file_ref.isa == 'PBXFileReference'
+            file_ref_path = configure_file_ref_path(file_ref)
+            files_path.push(file_ref_path)
+          end
         end
       end
 
