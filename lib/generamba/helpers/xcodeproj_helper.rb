@@ -124,7 +124,25 @@ module Generamba
     #
     # @return [TrueClass or FalseClass]
     def self.module_with_group_path_already_exists(project, group_path, group_is_logical)
+      # For projects that might have folder-based components, check filesystem first
+      project_dir = File.dirname(project.path)
+      module_dir = File.join(project_dir, group_path.to_s)
+
+      # If the directory actually exists on filesystem, the module exists
+      if Dir.exist?(module_dir)
+        return true
+      end
+
+      # For traditional projects, use the original logic
       module_group = self.retrieve_group_or_create_if_needed(group_path, nil, nil, project, false, group_is_logical)
+
+      # If we get a PBXFileSystemSynchronizedRootGroup back, it means we hit folder-based structure
+      # In this case, the filesystem check above is authoritative
+      if module_group && module_group.class.to_s.include?('PBXFileSystemSynchronizedRootGroup')
+        return false  # We already checked filesystem above, so module doesn't exist
+      end
+
+      # For traditional groups, check if we got a valid group back
       module_group.nil? ? false : true
     end
 
