@@ -34,19 +34,10 @@ module Generamba
 
       # Handle PBXFileSystemSynchronizedRootGroup (folder-based projects)
       if module_group.class.to_s.include?('PBXFileSystemSynchronizedRootGroup')
-        # For folder-based projects, we add files directly to the target without groups
+        # For folder-based projects, we don't need to add files to the project structure
         # The file system structure will be automatically reflected in Xcode
-        absolute_file_path = File.absolute_path(file_path)
-        project_dir = File.dirname(project.path)
-
-        begin
-          relative_path = Pathname.new(absolute_file_path).relative_path_from(Pathname.new(project_dir))
-          xcode_file = project.main_group.find_file_by_path(relative_path.to_s) ||
-                       project.main_group.new_reference(absolute_file_path)
-        rescue ArgumentError
-          # If relative path calculation fails, just use absolute path
-          xcode_file = project.main_group.new_reference(absolute_file_path)
-        end
+        # Just return early - the files are already created in the filesystem
+        return
       else
         xcode_file = module_group.new_file(File.absolute_path(file_path))
       end
